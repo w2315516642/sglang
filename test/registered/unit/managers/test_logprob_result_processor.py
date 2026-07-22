@@ -1,13 +1,14 @@
 import unittest
 from types import SimpleNamespace
 
-import torch
-
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase, maybe_stub_sgl_kernel
 
 maybe_stub_sgl_kernel()
 
+from sglang.srt.managers.scheduler_components import (  # noqa: E402
+    logprob_result_processor as logprob_result_processor_module,
+)
 from sglang.srt.managers.scheduler_components.logprob_result_processor import (  # noqa: E402
     SchedulerLogprobResultProcessor,
 )
@@ -42,6 +43,10 @@ def _logprob(top_logprobs_num=0, token_ids_logprob=None):
     )
 
 
+def _tensor(values):
+    return logprob_result_processor_module.torch.tensor(values)
+
+
 def _req(
     *,
     origin_input_ids=(10, 11, 12, 13),
@@ -65,6 +70,7 @@ def _req(
         temp_input_token_ids_logprobs_idx=None,
     )
 
+
 class TestSchedulerLogprobResultProcessor(CustomTestCase):
     def test_regular_input_logprobs_align_and_clip_vocab_boundary(self):
         processor = _processor(vocab_size=100)
@@ -86,7 +92,7 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
             input_token_logprobs=(-0.1, -0.2, -0.3),
             input_top_logprobs_val=[["top-a", "top-b", "top-sampling"]],
             input_top_logprobs_idx=[["idx-a", "idx-b", "idx-sampling"]],
-            input_token_ids_logprobs_val=[torch.tensor([-7.0, -8.0, -9.0])],
+            input_token_ids_logprobs_val=[_tensor([-7.0, -8.0, -9.0])],
             input_token_ids_logprobs_idx=[[7, 8, 9]],
         )
 
@@ -99,9 +105,21 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
         self.assertIsNone(req.temp_input_top_logprobs_val)
         self.assertIsNone(req.temp_input_token_ids_logprobs_val)
 
+        processor.add_input_logprob_return_values(
+            0,
+            req,
+            SimpleNamespace(input_token_logprobs=(-9.0, -8.0)),
+            logprob_pt=0,
+            num_input_logprobs=2,
+            last_prefill_chunk=True,
+        )
+
+        self.assertEqual(req.logprob.input_token_logprobs_val, [None, -0.1, -0.2])
+        self.assertEqual(req.logprob.input_token_logprobs_idx, [11, 12, 13])
+
     def test_multi_item_scoring_keeps_delimiter_logprobs_without_leading_none(self):
         processor = _processor(
-            enable_mis=True, 
+            enable_mis=True,
             vocab_size=MIS_DELIMITER_TOKEN_ID + 2,
         )
         req = _req(
@@ -114,7 +132,7 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
             input_token_logprobs=(-1.0, -2.0),
             input_top_logprobs_val=[["top-delim-1", "top-delim-2"]],
             input_top_logprobs_idx=[["idx-delim-1", "idx-delim-2"]],
-            input_token_ids_logprobs_val=[torch.tensor([-4.0, -5.0])],
+            input_token_ids_logprobs_val=[_tensor([-4.0, -5.0])],
             input_token_ids_logprobs_idx=[[42, 43]],
         )
 
@@ -136,7 +154,7 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
             next_token_logprobs=(-0.4,),
             next_token_top_logprobs_val=[["next-top"]],
             next_token_top_logprobs_idx=[["next-idx"]],
-            next_token_token_ids_logprobs_val=[torch.tensor([-4.0, -5.0])],
+            next_token_token_ids_logprobs_val=[_tensor([-4.0, -5.0])],
             next_token_token_ids_logprobs_idx=[[42, 43]],
         )
 
@@ -148,7 +166,23 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
         self.assertEqual(req.logprob.output_token_logprobs_val, [-0.4])
         self.assertEqual(req.logprob.output_token_logprobs_idx, [123])
         self.assertEqual(req.logprob.output_token_ids_logprobs_val, [[-4.0, -5.0]])
-    
+
+        req = _req()
+        output = SimpleNamespace(
+            next_token_logprobs=(-0.5,),
+            input_token_logprobs=(-0.1, -0.2, -0.3),
+        )
+
+        ret = processor.add_logprob_return_values(
+            0, req, pt=0, next_token_ids=[124], num_input_logprobs=3, output=output
+        )
+
+        self.assertEqual(ret, 3)
+        self.assertEqual(req.logprob.input_token_logprobs_val, [None, -0.1, -0.2])
+        self.assertEqual(req.logprob.input_token_logprobs_idx, [11, 12, 13])
+        self.assertEqual(req.logprob.output_token_logprobs_val, [-0.5])
+        self.assertEqual(req.logprob.output_token_logprobs_idx, [124])
+
     def test_calculate_num_input_logprobs_regular_and_mis(self):
         self.assertEqual(
             _processor().calculate_num_input_logprobs(
@@ -164,3 +198,7 @@ class TestSchedulerLogprobResultProcessor(CustomTestCase):
             ),
             2,
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
